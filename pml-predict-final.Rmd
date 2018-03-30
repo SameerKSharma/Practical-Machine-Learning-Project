@@ -1,0 +1,241 @@
+---
+title: "Machine Learning-Predicting Right or Wrong Way to Weight Lift"
+author: "Sameer Sharma"
+date: "March 28, 2018"
+output: 
+  html_document: 
+    keep_md: yes
+---
+### Introduction and Executive Summary
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These types of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here:
+http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of the project is to predict the manner in which 20 test cases did the exercise. This is the "classe" variable in the training set which can take on the classes A,B,C,D,E.
+
+### Data 
+The data for this project come from this source: 
+
+http://groupware.les.inf.puc-rio.br/har.
+
+As in all machine learning projects, we will be using the Training set to train the model (We will actually partition this training data into 2 sets).
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data is available here:  
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Note that we will use the Test dataset as a means to validate the accuracy of the predictions.
+
+The data should be downloaded and stored before reproducing the codes below.
+
+###  Partitioning and Clearning the Datasets
+
+Let us first load the already downloaded datasets within the R environment.  Note that you will need to edit this code to adjust for where you have kept the datasets.
+
+```{r}
+setwd("C:/Users/sony/Desktop/datascience/Machine Learning")
+training <- read.csv("C:/Users/sony/Desktop/datascience/Machine Learning/pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv("C:/Users/sony/Desktop/datascience/Machine Learning/pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+We will also load all relevant R packages required to conduct Machine Learning and analyse the characteristics (str) of the training dataset.
+
+```{r}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(randomForest)
+# library(knitr)  #  Note the use of R Markdown with Knitr
+
+str(training)
+str(testing)
+```
+
+The created datasets have missing values which we call NA and zeroes.  We will elimate the variables with too many zeroes in order not to interfere with the Machine Learning algorithms.  We will also eliminate variables that have more than 80% of their observations as NA.  Finally we will also eliminate rows with variables that we will not be using for the purpose of predictions (identities of persons, dates etc i.e the first 7 columns).  We condut a similar clearning procedure for the testing dataset.
+
+```{r}
+Remove_Columns_NA <- which(colSums(is.na(training) |training=="")>0.8*dim(training)[1]) 
+training_clean <- training[,-Remove_Columns_NA]
+training_clean <- training_clean[,-c(1:7)]
+dim(training_clean)
+
+indColToRemove <- which(colSums(is.na(testing) |testing=="")>0.8*dim(testing)[1]) 
+testing_clean <- testing[,-indColToRemove]
+testing_clean <- testing_clean[,-1]
+dim(testing_clean)
+
+```
+
+As previously highlighted, we will look to a. Create a training subset, b.  A testing subset within the training datafile and lastly use the testing dataset as the Validation dataset.  We breakdown the training data within a 80:20 mix.
+
+```{r}
+set.seed(12345)
+inTrain <- createDataPartition(training_clean$classe, p=0.8, list=FALSE)
+myTraining <- training_clean[inTrain, ]
+myTesting <- training_clean[-inTrain, ]
+dim(myTraining); dim(myTesting)
+```
+
+###  Using Various Machine Learning Algorithms For Training Purposes
+
+Note that we are trying to predict the "classe" variable which defines different action types.
+
+We will use Randowm Forest, Classification Trees , Linear Discriminant Analysus, Gradient Boosting Methods and not only select the best single model but also investigate whether an ensemble of the 3 best models can deliver better results in terms of accuracy within the mytesting dataset.  Due to the long  processing requirement, we will make use of parallel computing and K-fold classifications rather than bootstrapping for some of these models.  
+In order to improve processing speeds, we will however call on the parallel computing packages.
+This parallel computing code was provided curtesy of lgreski's github page.
+
+
+```{r}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+# Classification Trees
+In order to limit the risk of overfitting and optimize run times, we will conduct cross validation with 5 K folds (can use 5 or 10 with the latter taking longer).  Typically classification trees are not the most accurate models to use but they do give us a good sense of how to proceed in terms of next steps and allows us to better understand the data.
+
+```{r plot1,echo=TRUE}
+set.seed(12343)
+control <- trainControl(method="cv", number=5, allowParallel = TRUE)
+mod_CT <- train(classe~., data=myTraining, method="rpart", trControl=control)
+
+fancyRpartPlot(mod_CT$finalModel)
+
+```
+
+We can now run the model on the myTesting dataset.  If the model accuracy is high, we will use the actual testing dataset for validation.  If not we will need to look at other models.
+
+```{r}
+trainprediction <- predict(mod_CT,newdata=myTesting)
+
+confusion <- confusionMatrix(myTesting$classe,trainprediction)
+confusion$table
+confusion$overall[1]
+```
+
+We get a very low accuracy on the myTesting dataset itself of less than 50%.  This model is not a good predictor of classe.  
+
+# 2.  Training Random Forest
+This model is an extension of classification trees and is one of the most widely used algorithms in the field of Machine Learning.  
+
+Process: 
+1.  Bootstrap samples from training data (with         replacement)
+2.  Split and bootstrap variables
+3.  Grow trees (repeat split/bootstrap) and            vote/average final trees
+
+Some of the drawbacks of Random Forest is its slow nature, the tendency to overfit models, the difficulty in figuring out which tree is responsible for this overfitting etc..  It remains important as is being done here to use cross validation.
+
+```{r plot2, echo=TRUE}
+set.seed(12343)
+mod_rf<-train(classe~., data=myTraining, method="rf", trControl=control)
+print(mod_rf)
+plot(mod_rf,main="Accuracy of Random Forest Model by # Predictors")
+varImp(mod_rf)
+
+```
+
+We note that the algorithm achieves highest in traiinng accuracy with few predictors. There isn't a lot of loss in predictive power when adding or substracting variables as one would still have a high degree of in training sample predictibility with less than 3 predictors! We will now test the model with the myTest subset for accuracy
+
+```{r}
+predictrfmytest <- predict(mod_rf,newdata=myTesting)
+
+confusionrf <- confusionMatrix(myTesting$classe,predictrfmytest)
+confusionrf$table
+confusionrf$overall[1]
+```
+
+#  3. Using Boosting
+
+Along with Random Forest, boosting (GBM in our case) is one of the more accurate prediction models that exist today.  
+
+Process: Take a group of weak predictors, weight them and add them up.  Result is  a stronger predictor. 
+
+```{r plot3, echo=TRUE}
+set.seed(12343)
+mod_gbm <- train(classe~., data=myTraining, method="gbm", trControl=control, verbose=FALSE)
+print(mod_gbm)
+plot(mod_gbm)
+```
+
+Checking Model Accuracy with myTesting we get
+```{r}
+predictgbmmytest <- predict(mod_gbm,newdata=myTesting)
+
+confusiongbm <- confusionMatrix(myTesting$classe,predictgbmmytest)
+print(confusiongbm)
+confusiongbm$table
+```
+The GBM model demonstrates a high degree of accuracy but less than RF.
+
+# 4. Training with LDA Model
+Linear Discriminant Analysis is an example of a model based prediction which assumes that the data follows a probabilistic model/distribution (LDA =Gaussian) and uses Bayes' theorem to identify optimal classifiers/variables that can potentially take advantage of the structure of the data which in turn could help reduce computational complexity (reduce variables).  LDA and Naive Bayes can be reasonably accurate on real problems although this approach does make additional assumptions about the data, which can lead to model failure/reduced accuracy if they are too far off.
+
+```{r}
+set.seed(12343)
+mod_lda <- train(classe~., data=myTraining, method="lda", trControl=control, verbose=FALSE)
+mod_lda$results
+predictldamytest<-predict(mod_lda,newdata=myTesting)
+```
+
+The LDA approach leads to an accuracy slightly in excess of 70% in predicting myTraining casse predictions.  The LDA approach leads to better accuracy than with using classification trees but it does not beat GBM or Random Forest.
+
+
+###  Model Combination Using Ensembling Approach
+While the Random Forest Model appears to be the better model, we would like to check whether an odd combination of the 3 best models namely RF, GBM and LDA (the latter being a distant third) could add to overall accuracy in predicting the test/validation dataset.  Combining predictors = also known as ensembling methods in learning, combine classifiers by averaging/voting to improve accuracy (generally) although such methods add to scalability issues given the heavier computational requirements.
+
+We will follow the following steps
+
+Combine the Prediction Results and the Actual Classe variable into a New Data Frame
+
+```{r}
+combinedTestData <- data.frame(gbm.pred=predictgbmmytest,
+    rf.pred =predictrfmytest,lda.pred=predictldamytest,classe=myTesting$classe)
+```
+
+We now run a Random Forest Model on the combined test data.  
+
+```{r}
+comb.fit <- train(classe ~.,method="rf",data=combinedTestData,trControl=control)
+print(comb.fit)
+```
+
+We now use the comb.fit model to predict on the myTesting dataset.
+
+```{r}
+comb.pred.test <- predict(comb.fit, combinedTestData)
+```
+
+Now use the LDA, rf and GBM models to predict classe on the validation dataset known here as testing_clean.  We then create a new data frame with the 3 predictions.  Note here that in the testing_clean dataset, there is no classe variable.
+
+```{r}
+lda.pred.val<-predict(mod_lda,newdata=testing_clean)
+gbm.pred.val<-predict(mod_gbm,newdata=testing_clean)
+rf.pred.val<-predict(mod_rf,newdata=testing_clean)
+
+combinedValData <- data.frame(gbm.pred=gbm.pred.val,rf.pred=rf.pred.val,lda.pred=lda.pred.val)
+```
+
+Run the comb.fit on the combined validation data
+```{r}
+comb.pred.val <- predict(comb.fit,combinedValData)
+
+print(comb.pred.val)
+print(rf.pred.val)
+```
+
+
+    
+We can now shutdown the cluster and return the OS to its original state.
+```{r}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+
+After clearning and partitioning the datasets, we have run multiple models, classification trees which typically generate poor results and have done so here, random forests which is an ensemble of classification trees, linear discriminant analysis model, the GBM model and an ensemble of the latter 3 best models to predict classe.   We fimd that for the added computational complexity, a combined model in this case does not really improve predictability vs. the random forest model. Hence, we choose the RF model as our baseline model to predict classe.
